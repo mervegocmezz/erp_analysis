@@ -1,22 +1,30 @@
 # %%
-# ============================================================
-# ERP / oscillation analysis: Go/No-Go
-# ============================================================
+# 
+# ERP analysis: Go/No-Go
+# 
 #   NoGo-N2 (conflict detection)  -> fronto-central: FC1, FC2, Cz  ~200-300 ms
 #   NoGo-P3 (response inhibition) -> fronto-central: FC1, FC2, Cz  ~300-500 ms
-#   Beta ERD/ERS (motor)          -> C3, C4                    NOT a voltage
+#   Beta ERD/ERS (motor)          -> C3, C4  (NOT a voltage
 #                                     peak -- see step 8 below
-#
-# NOTE ON ELECTRODES: your easycap-M1 32-channel layout does not include an
+# to catch the brain in the act of pressing the brakes: Beta ERD shows us the 
+# motor system firing up to make a move on Go trials, while Beta ERS shows 
+# the active motor suppression when hitting the brakes on No-Go trials)
+
+
+# NOTE ON ELECTRODES: our easycap-M1 32-channel layout does not include an
 # FCz channel -- FCz was very likely used as the online reference during
 # recording, so it was never saved as a regular data channel. FC1/FC2 (which
 # flank FCz) plus Cz are the nearest available approximation of the classic
-# fronto-central N2/P3 site. Run `print(epochs.ch_names)` once if you want to
-# confirm your exact channel list.
-# ============================================================
+# fronto-central N2/P3 site. Run `print(epochs.ch_names)` to check exact channel list.
+ 
+
+
+import re
 import numpy as np
 import matplotlib
 matplotlib.use('qtagg')
+import matplotlib.pyplot as plt
+plt.ion()
 
 from mne import read_epochs, combine_evoked
 from mne.viz import plot_compare_evokeds
@@ -48,7 +56,7 @@ f_name = ('/Users/mervegocmez/Coding/data/thesis/derivatives/preprocessed/'
 epochs = read_epochs(f_name, preload=True)
 print(epochs)
 print(epochs.event_id)  # {'go': 11, 'nogo': 12}
-print(epochs.ch_names)  # check your real channel list here
+print(epochs.ch_names)  # checking channel names 
 
 # %%
 # ---- 2. Average within each condition = the ERP ------------------------
@@ -63,7 +71,7 @@ ev_go.plot(gfp=True, spatial_colors=True, titles='Go (all channels)')
 # %%
 # ---- 4. Waveform + scalp topography ---------------------------------------
 
-# Added 0.17 s: 0.25 s was just a transition, while 0.17 s catches the actual 
+# I also added 0.17 s: 0.25 s was just a transition, while 0.17 s catches the actual 
 # NoGo-N2 negative peak (~170 ms)—way better for showing conflict detection topography.
 
 ev_nogo.plot_joint(times=[0.17, 0.25, 0.4], title='NoGo: waveform + topography')
@@ -106,7 +114,7 @@ diff.plot_joint(times=[0.17, 0.22, 0.3, 0.4], title='Go/No-Go: nogo minus go')
 #
 # CAVEAT: this epoch only runs to 0.8 s post-stimulus. The ERD should be
 # visible, but the ERS rebound often follows the actual button-press by
-# several hundred ms and may be clipped by this window -- if the rebound
+# several hundred ms and may be clipped by this window, so if the rebound
 # looks cut off at the right edge, that's the epoch length, not necessarily
 # a real absence of ERS.
 roi_motor = safe_roi(epochs, ['C3', 'C4'])
@@ -125,10 +133,9 @@ power_nogo = epochs['nogo'].compute_tfr(
 power_nogo.apply_baseline((-0.2, 0), mode='percent')
 
 
+# %% Beta ERD/ERS at motor electrodes .. RUN THIS ONE!
 
-
-
-#  the new code, use this one rather than the last one because I wanted to keep the color range the same):
+#  the new code, use this one rather than the previous one, because I wanted to keep the range the same):
 vlim_range = (-0.6, 0.6)
 
 power_go.plot(
@@ -144,7 +151,43 @@ power_nogo.plot(
     title='NoGo: beta ERD/ERS (C3/C4)',
     vlim=vlim_range
 )
+
 # %%
-power_go.plot(picks=roi_motor, combine='mean', title='Go: beta ERD/ERS (C3/C4)')
-power_nogo.plot(picks=roi_motor, combine='mean', title='NoGo: beta ERD/ERS (C3/C4)')
+
+# ---- 9. Save every figure from this script ----------------------------------
+# Grabs every matplotlib figure still open at this point (all the plots
+# above) and writes each to its own PNG, task-named subfolder, one shared
+# output root so every task's figures live side by side but don't collide.
+OUT_ROOT = Path('/Users/mervegocmez/Coding/data/thesis/derivatives/figures')
+TASK_NAME = 'go_no_go'
+out_dir = OUT_ROOT / TASK_NAME
+out_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_filename(text):
+    """Sanitize title strings into safe filenames."""
+    name = re.sub(r'[^\w\-]+', '_', text.strip())
+    return name.strip('_') or 'figure'
+
+
+for num in plt.get_fignums():
+    fig = plt.figure(num)
+    fig.canvas.draw()  # Forces full rendering before saving
+    
+    # Retrieve title safely
+    if fig._suptitle is not None and fig._suptitle.get_text():
+        title = fig._suptitle.get_text()
+    elif fig.axes and fig.axes[0].get_title():
+        title = fig.axes[0].get_title()
+    else:
+        title = f'figure_{num}'
+        
+    fname = f'{num:02d}_{_safe_filename(title)}.png'
+    path = out_dir / fname
+    
+    fig.savefig(path, dpi=300, bbox_inches='tight')
+    print(f'Saved: {path}')
+
+plt.close('all')
+print("Execution complete. All figures exported successfully.")
 # %%
