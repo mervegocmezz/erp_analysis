@@ -1,0 +1,965 @@
+# ============================================================
+# EEG Preprocessing Configuration
+# ============================================================
+# Generated for: sub-NB002_ses-S001_task-nb_acq-eeg_run-001_eeg
+# Template: full
+# Edit this file to customize preprocessing for your data.
+# ============================================================
+
+# CONFIG METADATA
+# config_version tracks the config schema, not your data. It is written by
+# `ember init` and updated by `ember config migrate` -- do not hand-edit it.
+# Run `ember config validate` to check this file against the current schema.
+metadata:
+  config_version: 3
+  created: "2026-09-17T14:57:30"
+  last_modified: "2026-09-26T21:32:51"
+
+# NOTES
+# Add any freeform notes about this recording or preprocessing/analysis here.
+# This section is for documentation purposes only and is not used by any scripts.
+general_notes: |
+  Write freely below. Keep indentation.
+  --- NOTES ---
+
+# DATASET METADATA
+dataset:
+  name: sub-NB002_ses-S001_task-nb_acq-eeg_run-001_eeg
+  raw_file: NB002/eeg/ses-S001/sub-NB002_ses-S001_task-nb_acq-eeg_run-001_eeg.vhdr
+  subject_id: NB002
+  session_id: S001
+  run_id: 001
+  acquisition: eeg
+  task: nb
+
+# ============================================================
+# PREPROCESSING PIPELINE
+# ============================================================
+# Each section lists the steps that read it. Editing a section marks those
+# steps -- and everything after them -- as needing a re-run.
+# ============================================================
+preprocessing:
+
+  # CHANNEL MANAGEMENT
+  # Read by: load_data, mark_bad_channels
+  # Written by: auto_detect_bad_channels
+  # drop:       channels to remove entirely, e.g. [AUX1, ECG]
+  # types:      re-label non-EEG channels so EEG-only steps skip them, as
+  #             {name: type}, e.g. {ACC_X: misc, TRIGGER: stim}. Types: eeg,
+  #             eog, ecg, emg, misc, stim, resp, gsr, temperature, seeg, ecog,
+  #             dbs, eyegaze, pupil.
+  # montage:    sensor positions by name, e.g. standard_1020, standard_1005,
+  #             easycap-M1, biosemi64 -- any montage MNE ships. This feeds
+  #             topomaps and every position-dependent step (interpolation,
+  #             pyprep RANSAC, ICLabel), so name the cap the data was actually
+  #             recorded with: standard_1020 is a generic 10-20 layout, not a
+  #             cap, and on a 32-channel easycap it puts sensors up to 3 cm
+  #             off. `ember init` asks which cap and writes it here; a config
+  #             made any other way carries the generic default until edited.
+  #             null skips it, for data carrying its own digitisation.
+  # bad.manual: channels you marked bad -- interpolated
+  # bad.auto:   channels pyprep found -- interpolated. Rewritten only on
+  #             force=True or when the cropping changes; prune freely
+  # flagged:    channels to keep an eye on; no effect on processing
+  # force_keep: never mark these bad, whatever lands in bad.manual/auto
+  channels:
+    drop: []
+    types: {}
+    montage: easycap-M1  # chosen when this config was created
+    bad:
+      manual: [T7, FT9, TP9, F8]
+      auto:   # Auto-detected using pyprep NoisyChannels
+      - Fp1
+      - Fp2
+      - T8
+      - TP10
+    flagged: []
+    force_keep: [Fp1, Fp2]
+
+  # LINE NOISE REMOVAL WITH ZAPLINE
+  # Read by: apply_zapline
+  # enabled:           false skips the step
+  # line_freq:         mains frequency -- 50.0 in Europe, 60.0 in US/Japan
+  # process_harmonics: also clean 2x, 3x, ... up to Nyquist
+  # adaptive:          false uses dss_line, removing a fixed nremove; true uses
+  #                    dss_line_iter, which picks the number and ignores nremove
+  # nremove:           components to remove when adaptive is false
+  # Other meegkit keys are passed through, e.g. nfft, nkeep, win_sz, n_iter_max.
+  # Only data channels are cleaned. Anything typed misc, stim or eog above is
+  # left untouched -- its units are not the recording's, and mixing it in would
+  # distort the cleaning of every channel that is brain data.
+  zapline:
+    enabled: true
+    line_freq: 50.0
+    process_harmonics: true
+    adaptive: false
+    nremove: 3
+
+  # TIME CROPPING
+  # Read by: auto_detect_bad_channels, prepare_for_ica, apply_final_preprocessing
+  # Plots always show the whole recording; what the crop discards is shaded
+  # "BAD_cropped" at the head and tail rather than cut away, so you can see it
+  # before it goes.
+  # tmin:              start time in seconds
+  # tmax:              end time in seconds. null = run to the end; a negative
+  #                    value trims that many seconds off the end (-5 = last 5 s)
+  # drop_filter_edges: also crop the filter transient, which rings for roughly
+  #                    1.65/highpass seconds at each end -- 1.65 s at 1 Hz,
+  #                    16.5 s at 0.1 Hz, and a 50 Hz notch adds 3.3 s. Treated
+  #                    as a minimum: a wider tmin/tmax is used as written, a
+  #                    narrower one is widened and the log says which filter
+  #                    demanded it. false crops by tmin/tmax verbatim.
+  cropping:
+    tmin: 0
+    tmax:
+    drop_filter_edges: true
+
+  # AUTOMATIC BAD-SPAN DETECTION
+  # Read by: auto_detect_bad_spans
+  # One detector per kind of artifact a bad span is for: the ones ICA cannot
+  # model, plus anything that would corrupt the decomposition by sitting in the
+  # fit. Proposals land in bad_spans.auto for you to adjudicate -- a starting
+  # point, not a verdict. Expect roughly one flagged second in four to be time
+  # you would not have marked yourself.
+  # Thresholds are in microvolts, not volts: YAML reads `50e-6` as a *string*,
+  # so a volt-scale number here is a live footgun.
+  # enabled:       false skips detection; the lists below still apply
+  # classes:       drop one to switch that detector off
+  # emg_zscore:    muscle z-score in 110-140 Hz. Lowering it to 2 touches nearly
+  #                every hand-marked span but flags 14-20% of the recording
+  # step_uv:       electrode pop -- uV between consecutive samples. MNE's 150
+  #                default finds nothing on EEG, ever: the longest run above it
+  #                is ~9 ms, against a 50 ms default min_duration
+  # motion_factor: x the recording's own median 1 s peak-to-peak in 0.5-8 Hz.
+  #                An absolute uV threshold does not transfer between caps, and
+  #                the multiple has to be high -- at x5 it flags half a
+  #                recording, at x12 about 6% of it
+  # flat_uv:       dead channel -- uV per sample, held for 2 s. Insurance
+  # merge_gap:     bridge proposals closer together than this. A detector fires
+  #                in a stutter where a person marks one block; without
+  #                bridging you get 135 spans to review instead of 41
+  # min_length:    drop proposals shorter than this, after bridging. Note what
+  #                this costs: a single electrode pop with nothing near it is
+  #                milliseconds long and does not survive. A flaky electrode
+  #                pops repeatedly and gets bridged into one block, which is
+  #                the case worth reviewing; lower this to catch the other
+  bad_span_detection:
+    enabled: true
+    classes: [emg, step, motion, flat]
+    emg_zscore: 8.0
+    step_uv: 50.0
+    motion_factor: 12.0
+    flat_uv: 0.05
+    merge_gap: 2.0
+    min_length: 0.5
+
+  # BAD TIME SPANS
+  # Read by: add_bad_spans
+  # Written by: auto_detect_bad_spans
+  # Stretches to exclude, in seconds. The description is free text, but MNE only
+  # excludes a span from epochs and averages if it starts with "bad".
+  # Excluded = (manual + auto) - force_keep, so accepting the automatic verdict
+  # means doing nothing.
+  # manual:     spans you marked -- yours, never rewritten
+  # auto:       proposals, rewritten whenever detection re-runs. Deleting one
+  #             sticks until a detection setting changes; use force_keep to
+  #             veto it for good
+  # force_keep: stretches you have looked at and cleared. Subtracted from both
+  #             lists, and coarse is fine -- one entry can cover a whole lead-in
+  # manual:
+  # - onset: 10.5
+  #   offset: 12.3
+  #   description: bad_movement
+  # force_keep:
+  # - onset: 0.0
+  #   offset: 95.0
+  bad_spans:
+    manual: []
+    auto:   # auto-detected; prune what you disagree with
+    - {onset: 0.0, offset: 1.8, description: bad_auto_emg+motion}
+    - {onset: 110.9, offset: 111.7, description: bad_auto_emg}
+    - {onset: 165.2, offset: 165.8, description: bad_auto_emg}
+    - {onset: 170.2, offset: 171.1, description: bad_auto_emg}
+    - {onset: 183.0, offset: 183.6, description: bad_auto_emg}
+    - {onset: 266.7, offset: 268.1, description: bad_auto_emg}
+    - {onset: 329.8, offset: 338.7, description: bad_auto_emg+step}
+    - {onset: 383.0, offset: 385.2, description: bad_auto_emg}
+    - {onset: 513.6, offset: 514.3, description: bad_auto_emg}
+    - {onset: 622.7, offset: 624.3, description: bad_auto_emg}
+    - {onset: 866.9, offset: 868.5, description: bad_auto_emg}
+    - {onset: 936.1, offset: 937.7, description: bad_auto_emg}
+    - {onset: 961.9, offset: 963.3, description: bad_auto_emg}
+    - {onset: 970.9, offset: 972.4, description: bad_auto_emg}
+    - {onset: 981.3, offset: 986.0, description: bad_auto_emg}
+    - {onset: 990.9, offset: 1000.1, description: bad_auto_emg}
+    - {onset: 1033.3, offset: 1036.9, description: bad_auto_emg}
+    - {onset: 1053.4, offset: 1054.4, description: bad_auto_emg}
+    - {onset: 1058.0, offset: 1062.5, description: bad_auto_emg}
+    - {onset: 1066.4, offset: 1072.7, description: bad_auto_emg+step}
+    - {onset: 1083.2, offset: 1087.0, description: bad_auto_emg}
+    - {onset: 1091.6, offset: 1095.5, description: bad_auto_emg}
+    - {onset: 1103.4, offset: 1105.1, description: bad_auto_emg}
+    - {onset: 1122.3, offset: 1125.2, description: bad_auto_emg}
+    - {onset: 1130.2, offset: 1139.9, description: bad_auto_emg}
+    - {onset: 1154.9, offset: 1155.5, description: bad_auto_emg}
+    - {onset: 1183.5, offset: 1187.7, description: bad_auto_emg}
+    - {onset: 1193.0, offset: 1196.6, description: bad_auto_emg}
+    - {onset: 1452.3, offset: 1455.5, description: bad_auto_emg}
+    - {onset: 1480.6, offset: 1481.7, description: bad_auto_emg}
+    - {onset: 1501.7, offset: 1504.1, description: bad_auto_emg}
+    - {onset: 1547.7, offset: 1550.8, description: bad_auto_emg}
+    - {onset: 1554.3, offset: 1555.4, description: bad_auto_emg}
+    - {onset: 1558.4, offset: 1560.9, description: bad_auto_emg}
+    - {onset: 1568.7, offset: 1569.7, description: bad_auto_emg}
+    - {onset: 1575.1, offset: 1576.0, description: bad_auto_emg}
+    - {onset: 1608.1, offset: 1628.4, description: bad_auto_emg}
+    - {onset: 1633.3, offset: 1636.4, description: bad_auto_emg}
+    - {onset: 1644.2, offset: 1646.5, description: bad_auto_emg}
+    - {onset: 1954.3, offset: 1956.0, description: bad_auto_emg}
+    - {onset: 2188.1, offset: 2188.8, description: bad_auto_emg}
+    - {onset: 2204.9, offset: 2205.6, description: bad_auto_emg}
+    - {onset: 2288.1, offset: 2289.3, description: bad_auto_emg}
+    - {onset: 2367.9, offset: 2368.8, description: bad_auto_emg}
+    - {onset: 2434.2, offset: 2435.1, description: bad_auto_emg+step}
+    - {onset: 2468.0, offset: 2468.6, description: bad_auto_emg}
+    - {onset: 2488.4, offset: 2493.2, description: bad_auto_emg+step}
+    - {onset: 2504.2, offset: 2506.6, description: bad_auto_emg}
+    - {onset: 2509.5, offset: 2521.5, description: bad_auto_emg}
+    - {onset: 2541.9, offset: 2545.3, description: bad_auto_emg}
+    - {onset: 2551.6, offset: 2553.3, description: bad_auto_emg}
+    - {onset: 2557.9, offset: 2558.8, description: bad_auto_emg}
+    - {onset: 2573.9, offset: 2574.9, description: bad_auto_emg}
+    - {onset: 2596.8, offset: 2598.6, description: bad_auto_emg}
+    - {onset: 2601.7, offset: 2605.6, description: bad_auto_emg}
+    - {onset: 2611.0, offset: 2614.3, description: bad_auto_emg}
+    - {onset: 2665.1, offset: 2666.9, description: bad_auto_emg}
+    - {onset: 2687.9, offset: 2698.1, description: bad_auto_emg}
+    - {onset: 2705.9, offset: 2711.2, description: bad_auto_emg}
+    - {onset: 2713.4, offset: 2714.1, description: bad_auto_emg}
+    - {onset: 2753.8, offset: 2754.4, description: bad_auto_emg}
+    - {onset: 2969.1, offset: 2969.7, description: bad_auto_emg}
+    - {onset: 3015.7, offset: 3019.0, description: bad_auto_emg}
+    - {onset: 3122.8, offset: 3123.6, description: bad_auto_emg+step}
+    - {onset: 3175.4, offset: 3176.2, description: bad_auto_emg}
+    - {onset: 3188.8, offset: 3191.7, description: bad_auto_emg}
+    - {onset: 3269.8, offset: 3273.5, description: bad_auto_emg+step}
+    - {onset: 3361.0, offset: 3365.6, description: bad_auto_emg+step}
+    - {onset: 3390.0, offset: 3392.9, description: bad_auto_emg}
+    - {onset: 3513.0, offset: 3516.4, description: bad_auto_emg}
+    - {onset: 3522.1, offset: 3530.2, description: bad_auto_emg}
+    force_keep: []
+
+  # ICA PREPARATION FILTERING
+  # Read by: prepare_for_ica
+  # The band ICA is fitted on -- not the band that gets saved. A 1 Hz highpass
+  # is the usual choice, since slow drifts otherwise dominate the decomposition.
+  # null on either edge makes the band one-sided.
+  ica_filtering:
+    highpass: 1.0
+    lowpass: 100.0
+
+  # ICA CONFIGURATION
+  # Read by: fit_or_load_ica, detect_artifacts, mark_bad_ics, apply_final_preprocessing
+  # Written by: detect_artifacts
+  # Changing n_components, method, random_state, max_iter or fit_params re-fits
+  # the decomposition. The lists below only change which components are dropped.
+  # n_components:          how many to fit, or null for as many as the data supports
+  # method:                infomax, fastica or picard
+  # random_state:          seed, so a re-fit reproduces
+  # max_iter:              iteration cap, or auto
+  # fit_params:            passed to the algorithm, e.g. {extended: true}
+  # auto_reject_threshold: ICLabel confidence, 0-1, above which a component is
+  #                        called an artifact
+  # bad.manual:            components you marked bad -- excluded
+  # bad.auto:              components ICLabel flagged -- excluded, rewritten every run
+  # flagged, note:         bookkeeping only, no effect on exclusion
+  # force_keep:            never exclude these, whatever lands in bad.manual/auto
+  ica:
+    n_components:
+    method: infomax
+    random_state: 1
+    max_iter: auto
+    fit_params:
+      extended: true
+    auto_reject_threshold: 0.7
+    bad:
+      manual: [2, 3, 4, 6, 15]
+      auto:   # Auto-detected bad ICs using ICA-label
+      - 0
+      - 1
+    flagged: []
+    force_keep: []
+    note: []
+
+  # FINAL FILTERING
+  # Read by: apply_final_preprocessing
+  # The band the saved data keeps. null on either edge makes the band one-sided.
+  # notch: extra line-noise notch -- one frequency or a list, e.g. [50, 100].
+  #        null skips it, and it is usually unnecessary when zapline is on.
+  final_filtering:
+    highpass: 0.1
+    lowpass: 40.0
+    notch:
+
+  # ANNOTATION FIXES
+  # Read by: apply_final_preprocessing
+  # Corrections to the annotations that came with the recording. `index` is the
+  # position in that original list, and moves are applied before removals, so
+  # every index refers to the list as it was loaded.
+  # - index: 1
+  #   onset: 10.5         # move the start (seconds); omit to leave it
+  #   offset: 19.0        # move the end; omit to leave it
+  # - index: 3
+  #   remove: true        # drop the annotation entirely
+  annotation_fixes: []
+
+  # REREFERENCING
+  # Read by: set_reference
+  # ref_channels: "average" for a common average reference, or a list of channel
+  #               names to reference against, e.g. [TP9, TP10]
+  rereferencing:
+    ref_channels: average
+
+  # BAD CHANNEL INTERPOLATION
+  # Read by: interpolate_bad_channels
+  # enabled:    false leaves bad channels in place, still marked bad
+  # reset_bads: clear the bad list afterwards, so interpolated channels count
+  #             as good again
+  interpolation:
+    enabled: true
+    reset_bads: true
+
+  # VIEWING -- not a processing step
+  # How the interactive browser draws the data. The filter is applied to a
+  # throwaway copy, so nothing here changes the signal that reaches ICA or the
+  # saved file. It exists for marking bad spans: a 30-40 Hz view makes movement
+  # onsets far easier to place, and the filter is zero-phase, so a span lands
+  # where you put it.
+  #
+  # `f` in the browser steps to the next view, Shift+F to the previous, and the
+  # status bar names the one you land on. `display_filter` is the view the
+  # window opens on; the unfiltered signal always comes next, so one press is
+  # the filtered/broadband comparison. `extra_views` adds more bands after that
+  # -- each is filtered the first time you reach it (a few seconds on a long
+  # recording) and kept from then on, so a band you never visit costs nothing
+  # and one you do costs a copy of the recording in RAM. Delete any you do not
+  # want, and mind the line-noise harmonics when picking a high band.
+  # enabled:            false draws the signal unfiltered
+  # highpass / lowpass: band edges in Hz; null on either side is one-sided
+  # name:               what the status bar calls it; defaults to the band
+  inspection:
+    display_filter:
+      enabled: true
+      highpass: 30.0
+      lowpass: 40.0
+    extra_views:
+    - name: drift
+      highpass:
+      lowpass: 5.0
+    - name: emg
+      highpass: 60.0
+      lowpass:
+
+# ============================================================
+# EPOCHING (task-based data)
+# ============================================================
+# Read by: create_epochs, auto_detect_bad_epochs, mark_bad_epochs
+# Written by: create_epochs, auto_detect_bad_epochs
+# Segments the preprocessed recording into event-locked epochs and settles
+# which trials to keep. The ERP analyzer reads the same settings to rebuild
+# those epochs. Leave enabled: false for resting-state data and the steps are
+# skipped. Sections here are grouped by topic, not by the order steps run.
+# A recording that needs cutting more than one way -- a battery of sub-tasks
+# with different windows -- names its cuts under `groups` below; everything
+# else here is then the default each group inherits.
+# decim:                integer downsample factor for epochs. Applies on every
+#                       path, event-locked and fixed-length alike
+# reject_by_annotation: drop any epoch overlapping a BAD_* span, however
+#                       briefly. Applies on every path. Proportionate for a 1 s
+#                       ERP epoch and much less so for a 30 s block, where half
+#                       a second of EMG costs the whole trial
+# ============================================================
+epoching:
+  enabled: true
+  decim: 1
+  reject_by_annotation: true
+
+  # EVENT-LOCKED EPOCHS
+  # Read by: create_epochs
+  # Where the events are, and the window to cut around each one. The window
+  # lives here because that is what it is: a window *around an event*. If no
+  # event survives, fixed_length below takes over -- and refuses rather than
+  # cutting windows that quietly ignore the tmin/tmax set here.
+  # source:              where triggers live in the preprocessed data:
+  #                        annotations -> mne.events_from_annotations; the
+  #                                       markers are annotation descriptions
+  #                        stim        -> mne.find_events on `channel`; the
+  #                                       markers are integer trigger codes
+  #                        analog      -> the stimulation waveform on `channel`
+  #                                       rather than trigger pulses. See below
+  #                        none        -> no events here; use fixed_length
+  # channel:             channel to read events from. Required for stim and
+  #                      analog; null lets MNE autodetect, which only ever
+  #                      finds trigger lines
+  # tmin:                seconds before each event
+  # tmax:                seconds after each event
+  # baseline:            (start, end) in seconds; null = the segment edge, and
+  #                      the whole value null turns baseline correction off
+  # analog_min_off_time: how far apart two blocks must be, in seconds; null
+  #                      measures it from the recording. The analog detector's
+  #                      only knob, and it should not need turning
+  # annotate_blocks:     write each detected block into raw.annotations as a
+  #                      span running onset -> end, so the stimulation is
+  #                      visible in any browser and is saved with the
+  #                      recording. Epoching locks to onsets and would
+  #                      otherwise keep no record of how long a block ran.
+  #                      analog source only; false removes the spans again
+  #
+  # An analog source is for stimulators that route the drive signal to a
+  # recording channel: tACS/tDCS/tVNS, vibrotactile shakers, photodiodes, audio
+  # envelopes. These rest between blocks and oscillate during them, so
+  # find_events reads every upward step of the carrier as a trigger and gives
+  # up. Blocks are recovered from the waveform instead, as two markers per
+  # block: `block` at its onset and `block_end` at its end. The on/off level
+  # and the rest duration are measured from the recording, and every run
+  # prints what it found and how -- so if a block count looks wrong, the run
+  # log says which number to disbelieve. From there on they are markers like
+  # any other. Without groups each becomes a condition, so `block_end` epochs
+  # the window *after* stimulation and markers.drop: [block_end] keeps the
+  # blocks alone as a single condition; rename them under markers.rename
+  # below, e.g. {block: vts_on, block_end: vts_off}. The annotation over the
+  # block runs onset -> end under the `block` name, so renaming that condition
+  # renames the span too; the end marker adds no span of its own. With groups,
+  # the block and the rest after it are two cuts of one recording, neither
+  # with a baseline to correct against, and span: {start: block, end:
+  # block_end} restricts a fixed_length group to the stimulation itself:
+  #   groups:
+  #     stim:
+  #       markers: [block]
+  #       tmin: 0
+  #       tmax: 30
+  #       baseline: null
+  #     post:
+  #       markers: [block_end]
+  #       tmin: 0
+  #       tmax: 30
+  #       baseline: null
+  events:
+    source: annotations
+    channel:
+    tmin: -0.2
+    tmax: 0.8
+    baseline: [null, 0]
+    analog_min_off_time:
+    annotate_blocks: true
+
+  # FIXED-LENGTH EPOCHS (marker-less / resting-state)
+  # Read by: create_epochs
+  # Equal windows cut end to end, via mne.make_fixed_length_epochs. Used when
+  # events.source is `none`, and as the fallback when no marker survives. There
+  # is no event to centre on, so events.tmin/tmax/baseline cannot apply: a
+  # fallback that would silently discard them raises instead, and `none` is how
+  # you ask for this on purpose.
+  # duration: window length in seconds
+  # overlap:  overlap between consecutive windows, in seconds
+  fixed_length:
+    duration: 2.0
+    overlap: 0.0
+
+  # BAD EPOCHS
+  # Read by: auto_detect_bad_epochs
+  # The auto/manual split used for bad channels and bad ICs, applied to trials.
+  # Epochs are addressed by event sample (the integers in epochs.events[:, 0]),
+  # not by position, so a list stays correct when other epochs are dropped.
+  # Dropped = (bad.manual + bad.auto) - force_keep, so accepting the automatic
+  # verdict means doing nothing. MNE's `reject`/`flat` are deliberately absent:
+  # they drop trials inside the Epochs constructor, before they can be named.
+  # enabled:      learn a global peak-to-peak threshold with autoreject
+  # cv:           cross-validation folds; needs at least this many epochs
+  # random_state: seed for the threshold search
+  # decim:        decimation during the search. Affects speed only, not the
+  #               verdict
+  auto_reject:
+    enabled: true
+    cv: 5
+    random_state: 42
+    decim: 1
+
+  # BAD EPOCH LISTS
+  # Read by: mark_bad_epochs
+  # Written by: auto_detect_bad_epochs
+  # bad.auto:   auto-detected; prune what you disagree with. Rewritten only on
+  #             force=True or when auto_reject / groups change, so a pruned
+  #             list survives every other re-run
+  # bad.manual: event samples you marked bad. Yours, never rewritten
+  # force_keep: event samples to keep despite bad.auto
+  bad:
+    auto: []
+    manual: []
+  force_keep: []
+
+  # MARKERS -> CONDITIONS (the default)
+  # Read by: create_epochs
+  # Written by: create_epochs
+  # No "method" to choose: every trigger found in the recording becomes its own
+  # condition. On each run ember auto-fills `detected` (label -> count), like
+  # auto-detected bad channels, so you can see what is there. If every detected
+  # marker is dropped (or the recording has none), epoching falls back to
+  # fixed_length above -- or refuses, when the epoch window says that is not
+  # what you asked for. `drop` and `rename` apply to this single-cut mode only;
+  # a group under `groups` selects and renames its own markers.
+  # detected: auto-detected each run, label -> count. Do not hand-edit
+  # drop:     labels that should NOT become conditions, e.g. button presses
+  # rename:   friendlier condition names, {detected_label: condition_name}
+  markers:
+    detected:   # auto-detected each run: label -> count
+      Stimulus/S201: 656
+      Stimulus/S 41: 219
+      Stimulus/S 11: 156
+      Stimulus/S 31: 91
+      Stimulus/S 21: 88
+      Stimulus/S 22: 80
+      Stimulus/S 51: 68
+      Stimulus/S 52: 68
+      Stimulus/S 53: 68
+      Stimulus/S 12: 52
+      Stimulus/S 42: 39
+      Stimulus/S 32: 37
+      Stimulus/S202: 26
+      Stimulus/S110: 2
+      Stimulus/S119: 2
+      Stimulus/S120: 2
+      Stimulus/S129: 2
+      Stimulus/S130: 2
+      Stimulus/S139: 2
+      Stimulus/S140: 2
+      Stimulus/S149: 2
+      Stimulus/S150: 2
+      Stimulus/S159: 2
+      Stimulus/S102: 1
+      Stimulus/S103: 1
+      Stimulus/S104: 1
+      Stimulus/S105: 1
+      Stimulus/S106: 1
+      Stimulus/S107: 1
+    drop: []
+    rename: {}
+
+  # EPOCH GROUPS (cut one recording several ways)
+  # Read by: create_epochs, auto_detect_bad_epochs
+  # Leave empty and everything above behaves as it always has: one Epochs
+  # object, saved as <base>_epo.<format>.
+  #
+  # Name a group and you get one Epochs object -- and one file,
+  # <base>_desc-<name>_epo.<format> -- per group. That is the only way to give
+  # two sub-tasks different windows, since an Epochs object carries a single
+  # tmin/tmax. Markers belonging to no group are not epoched. Names may use
+  # letters, digits, underscores and dashes; they go into a dotted config path
+  # and into the filename (strictly BIDS-valid desc- values are alphanumeric).
+  #
+  # A group says what to epoch with exactly one of:
+  #   markers: [S1, S2]           each marker becomes its own condition
+  #   conditions: {name: [S1,S2]} several markers collapsed into one condition
+  #   confusion_matrix: {...}     the hit/miss/FA/CR overlay, for this group
+  #   fixed_length: {...}         equal windows instead of event-locked ones
+  # plus, optionally:
+  #   rename: {S1: standard}      friendlier names for the `markers` form
+  #   span: {start: M1, end: M2}  restrict the group to the block(s) between
+  #                               two markers, or `duration:` seconds after
+  #                               `start` when the end is unmarked. Needed
+  #                               whenever a battery reuses the same trigger
+  #                               across sub-tasks
+  #   span.occurrence:            which block when the same pair brackets
+  #                               several: all (default), first, last, or a
+  #                               1-based number -- counted per start marker.
+  #                               A practice run before the main one is
+  #                               `last`
+  #   tmin / tmax / baseline / decim / reject_by_annotation / auto_reject
+  #                               override the defaults above for this group
+  #
+  # groups:
+  #   oddball:
+  #     markers: [Stimulus/S 41, Stimulus/S 42]
+  #     rename: {Stimulus/S 41: standard, Stimulus/S 42: target}
+  #     span: {start: Stimulus/S140, end: Stimulus/S149, occurrence: last}
+  #     tmin: -0.2
+  #     tmax: 0.8
+  #   restEC:
+  #     span: {start: Stimulus/S103, end: Stimulus/S104}
+  #     fixed_length: {duration: 2.0, overlap: 0.0}
+  groups:
+
+    
+    go_no_go:
+      markers: [Stimulus/S 11, Stimulus/S 12]
+      rename: {Stimulus/S 11: go, Stimulus/S 12: nogo}
+      span: {start: Stimulus/S110, end: Stimulus/S119, occurrence: last}
+      tmin: -0.2
+      tmax: 0.8
+
+    stroop:
+      markers: [Stimulus/S 21, Stimulus/S 22]
+      rename: {Stimulus/S 21: congruent, Stimulus/S 22: incongruent}
+      span: {start: Stimulus/S120, end: Stimulus/S129, occurrence: last}
+      tmin: -0.2
+      tmax: 0.8
+
+
+    oddball:
+      markers: [Stimulus/S 41, Stimulus/S 42]
+      rename: {Stimulus/S 41: standard, Stimulus/S 42: target}
+      span: {start: Stimulus/S140, end: Stimulus/S149, occurrence: last}
+      tmin: -0.2
+      tmax: 0.8
+
+    nback:
+      markers: [Stimulus/S 31, Stimulus/S 32]
+      rename: {Stimulus/S 31: nontarget, Stimulus/S 32: target}
+      span: {start: Stimulus/S130, end: Stimulus/S139, occurrence: last}
+      tmin: -0.2
+      tmax: 1.0
+
+    dmts_sample:
+      markers: [Stimulus/S 51]
+      rename: {Stimulus/S 51: sample}
+      span: {start: Stimulus/S150, end: Stimulus/S159, occurrence: last}
+      tmin: -0.2
+      tmax: 0.8
+
+    dmts_delay:
+      markers: [Stimulus/S 52]
+      rename: {Stimulus/S 52: delay}
+      span: {start: Stimulus/S150, end: Stimulus/S159, occurrence: last}
+      tmin: 0
+      tmax: 2.0          # delay_s is 2.5s — leave margin before the probe marker
+      baseline:           # sustained activity, not a stimulus-evoked ERP
+
+    dmts_probe:
+      markers: [Stimulus/S 53]
+      rename: {Stimulus/S 53: probe}
+      span: {start: Stimulus/S150, end: Stimulus/S159, occurrence: last}
+      tmin: -0.2
+      tmax: 0.8
+
+
+
+
+    restEC:
+      span: {start: Stimulus/S103, end: Stimulus/S104}
+      fixed_length: {duration: 4.0, overlap: 0.0}
+
+
+  # BAD EPOCH LISTS, PER GROUP
+  # Read by: mark_bad_epochs
+  # Written by: auto_detect_bad_epochs
+  # The same three lists as `bad` / `force_keep` above, once per group. Kept
+  # beside `groups` rather than inside it because editing a group's settings
+  # has to invalidate the epochs it builds, while marking one trial bad must
+  # not -- the same split preprocessing.bad_spans has from
+  # preprocessing.bad_span_detection.
+  # bad_by_group:        {group_name: {auto: [], manual: []}}
+  # force_keep_by_group: {group_name: [event samples]}
+  bad_by_group:
+    oddball:
+      auto: [2071547, 2234054, 2306070, 2335686, 2352611, 2365044, 2375019, 2487243, 2489476, 2491385, 2493543, 2495643]   # auto-detected event samples; prune what you disagree with
+    restEC:
+      auto: []   # auto-detected event samples; prune what you disagree with
+    go_no_go:
+      auto: [381602, 384393, 387276, 411076, 419360, 435543, 463093, 484367, 503250, 514059, 541117, 562666, 620183, 625649, 649224, 654641, 662490, 667607, 678157, 680890, 697424, 729923, 732615, 740415, 743181, 745973, 775673, 784006, 800614, 803123, 811347, 832672, 849414, 857772, 860330, 868722, 874388, 893838, 899547]   # auto-detected event samples; prune what you disagree with
+    stroop:
+      auto: [1225618, 1227643, 1229060, 1230135, 1231701, 1233826, 1238326, 1239609, 1257509, 1261676, 1264351, 1268826, 1270960, 1299651, 1306751, 1308318, 1321434, 1364492, 1366084, 1369117, 1383175, 1394775, 1396083, 1401583, 1402925, 1415700, 1416900, 1419425, 1427508, 1428800, 1430091]   # auto-detected event samples; prune what you disagree with
+    nback:
+      auto: []   # auto-detected event samples; prune what you disagree with
+    dmts_sample:
+      auto: [2720870, 2750586, 2811860, 2864293, 3017208, 3088458, 3106182, 3188365, 3223740]   # auto-detected event samples; prune what you disagree with
+    dmts_delay:
+      auto: []   # auto-detected event samples; prune what you disagree with
+    dmts_probe:
+      auto: []   # auto-detected event samples; prune what you disagree with
+  force_keep_by_group: {}
+
+  # CONFUSION-MATRIX OVERLAY (optional, signal-detection designs)
+  # Read by: create_epochs
+  # When enabled, derive hit/miss/false_alarm/correct_rejection from stimulus x
+  # response instead of per-marker conditions. Markers are annotation labels
+  # (events.source: annotations) or integer codes (events.source: stim);
+  # specify the roles by hand. Epochs are stimulus-locked.
+  # enabled:         false leaves per-marker conditions in place
+  # target:          signal-present stimulus markers
+  # nontarget:       signal-absent stimulus markers
+  # response:        response / button-press markers
+  # response_window: (min, max) seconds after stimulus onset for a response to
+  #                  count towards that trial
+  # names:           what each of the four cells is called in the output
+  confusion_matrix:
+    enabled: false
+    target: []
+    nontarget: []
+    response: []
+    response_window: [0.0, 1.0]
+    names:
+      hit: hit
+      miss: miss
+      false_alarm: false_alarm
+      correct_rejection: correct_rejection
+
+# ============================================================
+# OUTPUT CONFIGURATION
+# ============================================================
+# Read by: fit_or_load_ica, save
+# save_format: extension for the files written -- fif.gz (compressed) or fif.
+#              It also names the file the saved ICA is looked for under, so
+#              changing it re-fits rather than loading the old decomposition.
+# ============================================================
+output:
+  save_format: fif.gz
+
+# ============================================================
+# ANALYSIS CONFIGURATION
+# ============================================================
+# Analyses that run on the preprocessed data: ember analyze --config <this file>
+# Every analyzer has an `enabled` flag -- turn on the ones you need.
+# ============================================================
+analysis:
+
+  # FIGURE OUTPUT
+  # Applies to every analyzer's figures.
+  # save_figures:       write figures to disk at all
+  # figure_format:      png, pdf or svg
+  # figure_dpi:         resolution for raster formats
+  # epoch_group:        which epoching.groups entry to analyse, when the
+  #                     preprocessing side wrote more than one
+  #                     (<base>_desc-<group>_epo.<format>). null is right
+  #                     whenever there is exactly one set of epochs. With
+  #                     several groups a name is required rather than guessed:
+  #                     they have different epoch windows, so their numbers
+  #                     are not comparable and must not land in one table
+  # allow_raw_fallback: analyse the continuous recording when no epochs file
+  #                     exists. Off by default, and the run fails loudly
+  #                     instead. The two are not interchangeable: only the
+  #                     epochs path respects the bad epochs you rejected, and
+  #                     dropping the noisiest 25% of epochs moves delta band
+  #                     power by a third. Segmentation itself is not the issue
+  #                     -- with epochs tiling the recording and n_fft equal to
+  #                     the epoch length, absolute band power is identical to
+  #                     0.00%, because Welch cuts continuous data into the very
+  #                     same windows. Turn this on and every affected row is
+  #                     tagged source: raw, so a mixed cohort stays visibly
+  #                     mixed
+  global:
+    save_figures: true
+    figure_format: png
+    figure_dpi: 300
+    epoch_group:
+    allow_raw_fallback: false
+
+  # FREQUENCY BANDS
+  # In Hz, shared by every analyzer. Add, rename or remove freely -- the
+  # analyzers below refer to them by name.
+  bands:
+    delta: [1, 4]
+    theta: [4, 8]
+    alpha: [8, 13]
+    beta: [13, 30]
+    gamma: [30, 40]
+
+  # CHANNEL GROUPS
+  # For spatial aggregation, referred to by name (e.g. by erp.roi).
+  #
+  # This block is the single source of truth: ember derives its built-in
+  # defaults from these lists, so what you see here is exactly what the region
+  # level aggregates over. Channels you do not record are ignored, so the full
+  # 10-20 extended set below is safe to leave in place on a smaller cap.
+  #
+  # Groups may overlap on purpose (frontal and left_hemisphere share channels),
+  # so region rows are not independent observations -- keep that in mind before
+  # applying a multiple-comparison correction across regions.
+  channel_groups:
+    left_hemisphere: [Fp1, AF7, AF3, F7, F5, F3, F1, FT9, FT7, FC5, FC3, FC1, T7, C5, C3, C1, TP9, TP7, CP5, CP3, CP1, P9, P7, P5, P3, P1, PO9, PO7, PO3, O1]
+    right_hemisphere: [Fp2, AF8, AF4, F8, F6, F4, F2, FT10, FT8, FC6, FC4, FC2, T8, C6, C4, C2, TP10, TP8, CP6, CP4, CP2, P10, P8, P6, P4, P2, PO10, PO8, PO4, O2]
+    midline: [Fpz, AFz, Fz, FCz, Cz, CPz, Pz, POz, Oz, Iz]
+    frontal: [Fp1, Fpz, Fp2, AF7, AF3, AFz, AF4, AF8, F7, F5, F3, F1, Fz, F2, F4, F6, F8]
+    central: [FC5, FC3, FC1, FCz, FC2, FC4, FC6, C5, C3, C1, Cz, C2, C4, C6, T7, T8]
+    parietal: [CP5, CP3, CP1, CPz, CP2, CP4, CP6, P7, P5, P3, P1, Pz, P2, P4, P6, P8]
+    occipital: [PO7, PO3, POz, PO4, PO8, O1, Oz, O2]
+    temporal_left: [FT7, T7, TP7]
+    temporal_right: [FT8, T8, TP8]
+    motor_left: [C3, FC1, FC5, CP1, CP5]
+    motor_right: [C4, FC2, FC6, CP2, CP6]
+
+  # POWER SPECTRAL DENSITY AND BAND POWER
+  # method:          welch or multitaper
+  # n_fft:           samples per FFT segment; null = analyzer default
+  # n_overlap:       overlapping samples; null = analyzer default
+  # output_relative: band power as a fraction of total power
+  # output_db:       report power in decibels
+  spectral:
+    enabled: true
+    method: welch
+    n_fft:
+    n_overlap:
+    output_relative: true
+    output_db: false
+
+  # SCALP TOPOGRAPHIES
+  # One map per band.
+  # bands:    names from `bands` above
+  # cmap:     any matplotlib colormap
+  # contours: contour lines per map
+  # sensors:  draw sensor positions
+  # colorbar: draw the colour scale
+  # zscore:   z-score across channels before plotting
+  topography:
+    enabled: true
+    bands: [delta, theta, alpha, beta, gamma]
+    cmap: RdBu_r
+    contours: 6
+    sensors: true
+    colorbar: true
+    zscore: true
+
+  # TIME-FREQUENCY DECOMPOSITION
+  # method:      morlet or multitaper
+  # window_sec:  sliding window length in seconds
+  # overlap_sec: overlap between windows in seconds
+  # freqs:       explicit frequencies in Hz; null = analyzer default
+  # n_cycles:    cycles per wavelet, or auto to scale with frequency
+  timefrequency:
+    enabled: false
+    method: morlet
+    window_sec: 2.0
+    overlap_sec: 1.0
+    freqs:
+    n_cycles: auto
+
+  # SPATIO-SPECTRAL DECOMPOSITION
+  # Maximises signal-band power against neighbouring noise bands. Fit on the
+  # reviewed epochs when there are any: each epoch is band-passed on its own
+  # and the covariances pooled, so rejected segments stay out of the fit.
+  # signal_band:      [low, high] in Hz; null falls back to alpha
+  # noise_band_width: Hz flanking the signal band on each side
+  # source:           null or auto fits the epochs when there are any, else
+  #                   the continuous recording; epochs requires epochs; raw
+  #                   fits the continuous recording even when epochs exist
+  # tmin:             window inside each epoch to fit on, in seconds; null
+  # tmax:             takes the epoch's own edge. Keep at least ~7 s: the
+  #                   band-pass filter alone lasts 3.3 s
+  # sub_epoch_sec:    re-cut each epoch into consecutive pieces this long,
+  #                   the remainder dropped; null keeps the epochs as they are
+  # pad_sec:          seconds of the continuous recording taken either side
+  #                   of every epoch as context for the band-pass and cropped
+  #                   off again before the covariance. Mirror-padding an epoch
+  #                   instead corrupts the first and last 1.65 s of it (230 %
+  #                   error at the edge for a 4 Hz band). null = half the
+  #                   filter length, 1.65 s, which is exact; 0 = mirror padding
+  # n_components:     how many components to keep
+  ssd:
+    enabled: false
+    signal_band:
+    noise_band_width: 1.0
+    source:
+    tmin:
+    tmax:
+    sub_epoch_sec:
+    pad_sec:
+    n_components: 5
+
+  # SENSOR-TO-SENSOR CONNECTIVITY
+  # methods:     coherence, wpli, plv, pli, dpli, imcoh
+  # window_sec:  sliding window length in seconds
+  # overlap_sec: overlap between windows in seconds
+  # bands:       names from `bands` above
+  connectivity:
+    enabled: false
+    methods: [coherence, wpli]
+    window_sec: 2.0
+    overlap_sec: 1.0
+    bands: [alpha, beta]
+
+  # SIGNAL COMPLEXITY
+  # measures:          which entropies to compute
+  # window_sec:        sliding window length in seconds
+  # embedding_dim:     sample entropy: pattern length m
+  # permutation_order: permutation entropy: ordinal pattern length. Separate
+  #                    from embedding_dim because it counts `order!` patterns
+  #                    -- at 2 there are only two, so the normalised value
+  #                    saturates near 1.0 for every signal (white noise 1.0000
+  #                    vs a pure sine 0.9988). Minimum 3
+  # tolerance:         sample entropy: threshold as a fraction of signal SD
+  entropy:
+    enabled: false
+    measures: [sample_entropy, permutation_entropy, spectral_entropy]
+    window_sec: 5.0
+    embedding_dim: 2
+    permutation_order: 3
+    tolerance: 0.2
+
+  # MICROSTATE CLUSTERING
+  # n_states:       number of microstate maps
+  # n_runs:         clustering restarts; the best fit is kept
+  # gfp_peaks_only: cluster only on global field power peaks
+  microstates:
+    enabled: false
+    n_states: 4
+    n_runs: 10
+    gfp_peaks_only: true
+
+  # PHASE-AMPLITUDE COUPLING
+  # phase_freqs:         phase-providing frequencies, Hz
+  # amplitude_freqs:     amplitude-providing frequencies, Hz
+  # phase_bandwidth:     filter width around each phase frequency
+  # amplitude_bandwidth: filter width around each amplitude frequency
+  # method:              mi (modulation index) or mvl (mean vector length)
+  # n_bins:              phase bins; only used when method is mi
+  pac:
+    enabled: false
+    phase_freqs: [4, 6, 8, 10, 12, 14]
+    amplitude_freqs: [30, 40, 50, 60, 70, 80]
+    phase_bandwidth: 2.0
+    amplitude_bandwidth: 10.0
+    method: mi
+    n_bins: 18
+
+  # SPECTRAL MEASURES OVER SLIDING WINDOWS
+  # window_sec:  window length in seconds
+  # overlap_sec: overlap between windows in seconds
+  # method:      welch or multitaper
+  dynamics:
+    enabled: false
+    window_sec: 2.0
+    overlap_sec: 1.0
+    method: welch
+
+  # APERIODIC / PERIODIC SEPARATION (specparam)
+  # Separates the aperiodic (1/f) background from periodic peaks.
+  # freq_range:        [low, high] in Hz to fit over; null = full range
+  # peak_width_limits: min and max peak width, Hz
+  # max_n_peaks:       how many peaks to fit at most
+  # min_peak_height:   in log power
+  # peak_threshold:    in standard deviations of the flattened spectrum
+  # aperiodic_mode:    fixed, or knee when the spectrum bends
+  specparam:
+    enabled: false
+    freq_range:
+    peak_width_limits: [0.5, 12.0]
+    max_n_peaks: 6
+    min_peak_height: 0.1
+    peak_threshold: 2.0
+    aperiodic_mode: fixed
+
+  # EVENT-RELATED POTENTIALS
+  # Needs the `epoching` section above. Plots one panel per condition, plus an
+  # overlay comparing them.
+  # roi:       channel, list of channels, or a channel_groups name; null = all
+  #            EEG channels
+  # combine:   how to collapse the ROI in the overlay: gfp or mean
+  # show_gfp:  add a GFP trace to each panel
+  # peak_tmin: window for the peak amplitude/latency metric, in seconds
+  # peak_tmax: relative to the event
+  erp:
+    enabled: false
+    roi:
+    combine: gfp
+    show_gfp: true
+    peak_tmin: 0.0
+    peak_tmax: 0.5
